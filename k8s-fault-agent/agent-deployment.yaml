@@ -1,0 +1,248 @@
+---
+# Namespace for k8s_fault_agent components
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-fault-agent
+  labels:
+    name: k8s-fault-agent
+    purpose: autonomous-agent-testing
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agent-secrets
+  namespace: k8s-fault-agent
+type: Opaque
+stringData:
+  LITELLM_MASTER_KEY: "sk-1234"
+
+---
+# ConfigMap for agent configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: k8s-fault-agent
+data:
+  LITELLM_URL: "http://litellm-proxy.k8s-fault-agent.svc.cluster.local:4000"
+  MODEL_ALIAS: "gemini-3-flash"
+  K8S_NAMESPACE: "test"
+  AUTO_REMEDIATE: "true"
+
+---
+# ServiceAccount for Autonomous Agent
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autonomous-agent
+  namespace: k8s-fault-agent
+
+---
+# ClusterRole for Autonomous Agent
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: autonomous-agent
+rules:
+# Read access to resources
+- apiGroups: [""]
+  resources:
+    - pods
+    - pods/log
+    - pods/status
+    - services
+    - endpoints
+    - nodes
+    - events
+  verbs:
+    - get
+    - list
+    - watch
+
+# Write access for remediation
+- apiGroups: [""]
+  resources:
+    - pods
+  verbs:
+    - delete
+    - patch
+
+# Access to deployments
+- apiGroups: ["apps"]
+  resources:
+    - deployments
+    - replicasets
+    - statefulsets
+  verbs:
+    - get
+    - list
+    - watch
+    - patch
+    - update
+
+---
+# ClusterRoleBinding for Autonomous Agent
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: autonomous-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: autonomous-agent
+subjects:
+- kind: ServiceAccount
+  name: autonomous-agent
+  namespace: k8s-fault-agent
+
+---
+# Autonomous Agent Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autonomous-agent
+  namespace: k8s-fault-agent
+  labels:
+    app: autonomous-agent
+    component: fault-detection
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autonomous-agent
+  template:
+    metadata:
+      labels:
+        app: autonomous-agent
+        component: fault-detection
+    spec:
+      serviceAccountName: autonomous-agent
+      
+      containers:
+      - name: agent
+        image: autonomous-k8s-agent:1.0.0  # Build from k8s_fault_agent.py
+        imagePullPolicy: Never # Use local image for development
+        
+        env:
+        # LiteLLM Proxy Configuration
+        - name: LITELLM_URL
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: LITELLM_URL
+        
+        - name: LITELLM_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agent-secrets
+              key: LITELLM_MASTER_KEY
+        
+        - name: MODEL_ALIAS
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: MODEL_ALIAS
+        
+        # Agent Configuration
+        - name: K8S_NAMESPACE
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: K8S_NAMESPACE
+        
+        - name: AUTO_REMEDIATE
+          valueFrom:
+            configMapKeyRef:
+              name: agent-config
+              key: AUTO_REMEDIATE
+        
+        # Tracing Configuration
+        - name: TRACE_TAGS
+          value: "k8s,fault-detection,autonomous,production"
+        
+        - name: OTEL_SERVICE_NAME
+          value: "autonomous-k8s-agent"
+        
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "50m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+
+      volumes:
+        - name: config
+          configMap:
+            name: agent-config
+---
+# CronJob for periodic agent runs (optional)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: autonomous-agent-periodic
+  namespace: k8s-fault-agent
+spec:
+  # Run every 5 minutes
+  schedule: "*/5 * * * *"
+  
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: autonomous-agent
+            run-type: periodic
+        spec:
+          serviceAccountName: autonomous-agent
+          restartPolicy: OnFailure
+          
+          containers:
+          - name: agent
+            image: autonomous-k8s-agent:1.0.0
+            
+            env:
+            - name: LITELLM_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: agent-config
+                  key: LITELLM_URL
+            
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: LITELLM_MASTER_KEY
+            
+            - name: MODEL_ALIAS
+              valueFrom:
+                configMapKeyRef:
+                  name: agent-config
+                  key: MODEL_ALIAS
+            
+            - name: K8S_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: agent-config
+                  key: K8S_NAMESPACE
+            
+            - name: AUTO_REMEDIATE
+              valueFrom:
+                configMapKeyRef:
+                  name: agent-config
+                  key: AUTO_REMEDIATE
+            
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "50m"
+              limits:
+                memory: "256Mi"
+                cpu: "200m"
+
+          volumes:
+          - name: config
+            configMap:
+              name: agent-config

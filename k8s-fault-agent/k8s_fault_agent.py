@@ -1,29 +1,21 @@
 """
-Kubernetes Fault Detection and Remediation AI Agent for AgentCert with OpenTelemetry
+Kubernetes Fault Detection and Remediation AI Agent
 """
 
 import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any
+from typing import Dict, List
 from dataclasses import dataclass, asdict
-from enum import Enum
 
-# Kubernetes client - v35+ pattern
+# Kubernetes client
 from kubernetes import client
 from kubernetes import config as k8s_config
 from kubernetes.client.rest import ApiException
 
-# OpenAI v2+ client
+# OpenAI SDK - ONLY for communicating with LiteLLM gateway
 from openai import OpenAI
-
-# OpenTelemetry imports
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.resources import Resource
 
 # Configure logging
 logging.basicConfig(
@@ -33,116 +25,125 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class FaultType(Enum):
-    """Types of Kubernetes faults that can be detected"""
-    POD_CRASH = "pod_crash"
-    POD_PENDING = "pod_pending"
-    RESOURCE_LIMIT = "resource_limit"
-    IMAGE_PULL_ERROR = "image_pull_error"
-    CONFIG_ERROR = "config_error"
-    NETWORK_ISSUE = "network_issue"
-    STORAGE_ISSUE = "storage_issue"
-    NODE_NOT_READY = "node_not_ready"
-    SERVICE_UNAVAILABLE = "service_unavailable"
-    UNKNOWN = "unknown"
-
-
-class RemediationAction(Enum):
-    """Available remediation actions"""
-    RESTART_POD = "restart_pod"
-    SCALE_DEPLOYMENT = "scale_deployment"
-    UPDATE_CONFIG = "update_config"
-    INCREASE_RESOURCES = "increase_resources"
-    ROLLBACK_DEPLOYMENT = "rollback_deployment"
-    CLEAR_EVICTED_PODS = "clear_evicted_pods"
-    PATCH_SERVICE = "patch_service"
-    NO_ACTION = "no_action"
-
-
 @dataclass
-class FaultDetectionResult:
-    """Structured result for fault detection"""
+class FaultContext:
+    """Context information about a detected fault"""
     timestamp: str
-    fault_detected: bool
-    fault_type: str
-    affected_resource: str
     namespace: str
-    severity: str
-    description: str
-    raw_data: Dict[str, Any]
+    resource_type: str
+    resource_name: str
+    status: str
+    conditions: List[Dict]
+    container_statuses: List[Dict]
+    events: List[str]
     
     def to_dict(self):
         return asdict(self)
+    
+    def to_prompt(self) -> str:
+        """Convert fault context to LLM prompt"""
+        return f"""
+Kubernetes Fault Detected:
+
+Resource: {self.resource_type}/{self.resource_name}
+Namespace: {self.namespace}
+Current Status: {self.status}
+Timestamp: {self.timestamp}
+
+Conditions:
+{json.dumps(self.conditions, indent=2)}
+
+Container Statuses:
+{json.dumps(self.container_statuses, indent=2)}
+
+Recent Events:
+{chr(10).join(self.events)}
+
+Please analyze this fault and provide:
+1. Root cause analysis
+2. Recommended remediation action
+3. Step-by-step remediation instructions
+4. Risk assessment
+
+Respond in JSON format with keys: root_cause, action, steps, risk_level
+"""
 
 
 @dataclass
-class RemediationResult:
-    """Structured result for remediation action"""
+class AgentDecision:
+    """Decision made by the autonomous agent"""
     timestamp: str
-    action_taken: str
-    success: bool
-    affected_resource: str
-    namespace: str
-    details: str
-    error_message: Optional[str] = None
+    fault_context: FaultContext
+    llm_reasoning: str
+    root_cause: str
+    recommended_action: str
+    remediation_steps: List[str]
+    risk_level: str
+    confidence: float
     
     def to_dict(self):
-        return asdict(self)
+        result = asdict(self)
+        result['fault_context'] = self.fault_context.to_dict()
+        return result
 
 
-class K8sAgentConfig:
-    """Configuration for the Kubernetes Agent"""
+class AutonomousAgentConfig:
+    """
+    Configuration for the Autonomous Agent
+    """
     
     def __init__(self):
-        # OpenAI Configuration - v2.16.0+
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
-        self.openai_baseurl = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        # LLM Gateway Configuration (LiteLLM)
+        self.gateway_url = os.getenv("LITELLM_URL")
+        self.gateway_api_key = os.getenv("LITELLM_MASTER_KEY")
+        
+        # Model alias - LiteLLM maps this to actual model
+        self.model_alias = os.getenv("MODEL_ALIAS")
         
         # Agent Configuration
-        self.namespace = os.getenv("K8S_NAMESPACE", "default")
-        self.check_interval = int(os.getenv("CHECK_INTERVAL", "30"))
-        self.auto_remediate = os.getenv("AUTO_REMEDIATE", "true").lower() == "true"
+        self.namespace = os.getenv("K8S_NAMESPACE")
+        self.auto_remediate = os.getenv("AUTO_REMEDIATE", "false").lower() == "true"
+        self.dry_run = os.getenv("DRY_RUN", "false").lower() == "true"
         
-        # OpenTelemetry Configuration
-        self.otel_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        # Agent Identity (for tracing metadata)
+        self.agent_id = os.getenv("AGENT_ID", f"agent-{os.getenv('HOSTNAME', 'local')}")
+        self.session_id = os.getenv("SESSION_ID", f"session-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}")
         
-        # Validate required configurations
+        # Validate
         self._validate()
     
     def _validate(self):
-        """Validate required configuration"""
-        if not self.openai_api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        if not self.otel_endpoint:
-            raise ValueError("OTEL_EXPORTER_OTLP_ENDPOINT is required")
+        """Validate configuration"""
+        if not self.gateway_url:
+            raise ValueError("LITELLM_URL environment variable is required")
+        if not self.gateway_api_key:
+            raise ValueError("LITELLM_MASTER_KEY environment variable is required")
+        if not self.model_alias:
+            raise ValueError("MODEL_ALIAS environment variable is required")
+        if not self.namespace:
+            raise ValueError("K8S_NAMESPACE environment variable is required")
+        
+        logger.info(f"Agent configured with LLM Gateway: {self.gateway_url}")
+        logger.info(f"Agent model alias: {self.model_alias}")
+        logger.info(f"Monitoring namespace: {self.namespace}")
 
 
-class K8sFaultDetectionAgent:
+class AutonomousK8sFaultAgent:
     """
-    AI Agent for Kubernetes Fault Detection and Remediation
-    
-    This agent:
-    1. Monitors Kubernetes resources for faults
-    2. Uses LLM to analyze and diagnose issues
-    3. Performs remediation actions
-    4. Traces all operations to Open Telemetry collector
+    Fully Autonomous Kubernetes Fault Detection and Remediation Agent
     """
     
-    def __init__(self, config: K8sAgentConfig):
+    def __init__(self, config: AutonomousAgentConfig):
         self.config = config
         
-        # Initialize Kubernetes client - v35+ pattern
-        # Use proper kubernetes.config module (not config.load_*)
+        # Initialize Kubernetes client
         try:
-            # Try in-cluster configuration first (for pods)
             k8s_config.load_incluster_config()
             logger.info("Loaded in-cluster Kubernetes configuration")
         except k8s_config.ConfigException:
-            # Fall back to kubeconfig file (for local development)
             try:
                 k8s_config.load_kube_config()
-                logger.info("Loaded kubeconfig Kubernetes configuration")
+                logger.info("Loaded local Kubernetes configuration")
             except k8s_config.ConfigException as e:
                 logger.error(f"Failed to load Kubernetes configuration: {e}")
                 raise
@@ -150,556 +151,371 @@ class K8sFaultDetectionAgent:
         self.v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
         
-        # Initialize OpenAI client - v2.16.0+ pattern
-        self.openai_client = OpenAI(api_key=self.config.openai_api_key, base_url=self.config.openai_baseurl)
-        
-        # Initialize OpenTelemetry
-        self._setup_otel()
-        
-        logger.info("K8s Fault Detection Agent initialized successfully")
-        logger.info(f"Using OpenAI model: {self.config.openai_model}")
-    
-    def _setup_otel(self):
-        """
-        Setup OpenTelemetry tracing with OTLP exporter
-        
-        This sends traces to the OTEL collector endpoint specified in
-        OTEL_EXPORTER_OTLP_ENDPOINT environment variable.
-        """
-        resource = Resource.create({
-            "service.name": "k8s-fault-agent",
-            "service.version": "1.2.0",
-            "deployment.environment": os.getenv("DEPLOYMENT_ENV", "production")
-        })
-        
-        provider = TracerProvider(resource=resource)
-        
-        # Configure OTLP exporter
-        # This sends traces to an OTEL collector
-        otlp_exporter = OTLPSpanExporter(
-            endpoint=self.config.otel_endpoint,
-            insecure=True  # Use insecure for localhost, configure TLS for production
+        # Initialize LLM client
+        self.llm_gateway = OpenAI(
+            api_key=self.config.gateway_api_key,
+            base_url=f"{self.config.gateway_url}/v1"
         )
         
-        provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-        trace.set_tracer_provider(provider)
-        
-        self.tracer = trace.get_tracer(__name__)
-        logger.info(f"OpenTelemetry configured with endpoint: {self.config.otel_endpoint}")
+        logger.info("=" * 60)
+        logger.info("Autonomous K8s Fault Detection Agent Initialized")
+        logger.info(f"LLM Gateway: {self.config.gateway_url}")
+        logger.info(f"Model Alias: {self.config.model_alias}")
+        logger.info(f"Agent ID: {self.config.agent_id}")
+        logger.info(f"Session: {self.config.session_id}")
+        logger.info("=" * 60)
     
-    def get_pod_status(self, namespace: str = None) -> List[Dict]:
+    def gather_fault_context(self, namespace: str = None) -> List[FaultContext]:
         """
-        Get status of all pods in namespace
-        
-        Args:
-            namespace: Kubernetes namespace (defaults to configured namespace)
-            
-        Returns:
-            List of pod status dictionaries
+        Gather context about current cluster state
+        Returns list of fault contexts for unhealthy resources
         """
         namespace = namespace or self.config.namespace
+        faults = []
         
-        with self.tracer.start_as_current_span("get_pod_status") as span:
-            span.set_attribute("namespace", namespace)
+        try:
+            # Get all pods
+            pods = self.v1.list_namespaced_pod(namespace)
             
-            try:
-                pods = self.v1.list_namespaced_pod(namespace)
-                pod_statuses = []
+            for pod in pods.items:
+                # Check if pod is in unhealthy state
+                if pod.status.phase not in ["Running", "Succeeded"]:
+                    fault_context = self._extract_pod_fault_context(pod)
+                    faults.append(fault_context)
                 
-                for pod in pods.items:
-                    pod_info = {
-                        "name": pod.metadata.name,
-                        "namespace": pod.metadata.namespace,
-                        "phase": pod.status.phase,
-                        "conditions": [],
-                        "container_statuses": []
-                    }
-                    
-                    # Get pod conditions
-                    if pod.status.conditions:
-                        pod_info["conditions"] = [
-                            {
-                                "type": cond.type,
-                                "status": cond.status,
-                                "reason": cond.reason,
-                                "message": cond.message
-                            }
-                            for cond in pod.status.conditions
-                        ]
-                    
-                    # Get container statuses
-                    if pod.status.container_statuses:
-                        pod_info["container_statuses"] = [
-                            {
-                                "name": cs.name,
-                                "ready": cs.ready,
-                                "restart_count": cs.restart_count,
-                                "state": self._get_container_state(cs.state)
-                            }
-                            for cs in pod.status.container_statuses
-                        ]
-                    
-                    pod_statuses.append(pod_info)
-                
-                span.set_attribute("pods_count", len(pod_statuses))
-                
-                return pod_statuses
-                
-            except ApiException as e:
-                logger.error(f"Error getting pod status: {e}")
-                span.set_attribute("error", str(e))
-                raise
+                # Also check for high restart counts even if running
+                elif pod.status.container_statuses:
+                    for cs in pod.status.container_statuses:
+                        if cs.restart_count > 5:
+                            fault_context = self._extract_pod_fault_context(pod)
+                            faults.append(fault_context)
+                            break
+            
+            logger.info(f"Gathered {len(faults)} fault contexts from namespace {namespace}")
+            return faults
+            
+        except ApiException as e:
+            logger.error(f"Error gathering fault context: {e}")
+            return []
+    
+    def _extract_pod_fault_context(self, pod) -> FaultContext:
+        """Extract fault context from a pod"""
+        # Get pod conditions
+        conditions = []
+        if pod.status.conditions:
+            conditions = [
+                {
+                    "type": cond.type,
+                    "status": cond.status,
+                    "reason": cond.reason if cond.reason else "Unknown",
+                    "message": cond.message if cond.message else ""
+                }
+                for cond in pod.status.conditions
+            ]
+        
+        # Get container statuses
+        container_statuses = []
+        if pod.status.container_statuses:
+            container_statuses = [
+                {
+                    "name": cs.name,
+                    "ready": cs.ready,
+                    "restart_count": cs.restart_count,
+                    "state": self._get_container_state(cs.state)
+                }
+                for cs in pod.status.container_statuses
+            ]
+        
+        # Get recent events
+        events = []
+        try:
+            field_selector = f"involvedObject.name={pod.metadata.name}"
+            event_list = self.v1.list_namespaced_event(
+                pod.metadata.namespace,
+                field_selector=field_selector
+            )
+            events = [
+                f"{event.last_timestamp}: {event.reason} - {event.message}"
+                for event in event_list.items[:5]  # Last 5 events
+            ]
+        except:
+            pass
+        
+        return FaultContext(
+            timestamp=datetime.utcnow().isoformat(),
+            namespace=pod.metadata.namespace,
+            resource_type="pod",
+            resource_name=pod.metadata.name,
+            status=pod.status.phase,
+            conditions=conditions,
+            container_statuses=container_statuses,
+            events=events
+        )
     
     def _get_container_state(self, state) -> Dict:
-        """Extract container state information"""
+        """Extract container state"""
         if state.running:
             return {"status": "running", "started_at": str(state.running.started_at)}
         elif state.waiting:
             return {
                 "status": "waiting",
-                "reason": state.waiting.reason,
-                "message": state.waiting.message
+                "reason": state.waiting.reason if state.waiting.reason else "Unknown",
+                "message": state.waiting.message if state.waiting.message else ""
             }
         elif state.terminated:
             return {
                 "status": "terminated",
-                "reason": state.terminated.reason,
+                "reason": state.terminated.reason if state.terminated.reason else "Unknown",
                 "exit_code": state.terminated.exit_code,
-                "message": state.terminated.message
+                "message": state.terminated.message if state.terminated.message else ""
             }
         return {"status": "unknown"}
     
-    def detect_faults(self, namespace: str = None) -> List[FaultDetectionResult]:
+    def ask_llm_for_decision(self, fault_context: FaultContext) -> AgentDecision:
         """
-        Detect faults in Kubernetes resources
-        
-        Args:
-            namespace: Kubernetes namespace
-            
-        Returns:
-            List of detected faults
+        Ask LLM (via gateway) to analyze fault and decide on remediation
         """
-        namespace = namespace or self.config.namespace
-        detected_faults = []
+        logger.info(f"Consulting LLM Gateway for: {fault_context.resource_type}/{fault_context.resource_name}")
         
-        with self.tracer.start_as_current_span("detect_faults") as span:
-            span.set_attribute("namespace", namespace)
-            
-            # Get pod statuses
-            pod_statuses = self.get_pod_status(namespace)
-            
-            for pod in pod_statuses:
-                fault = self._analyze_pod_for_faults(pod)
-                if fault:
-                    detected_faults.append(fault)
-            
-            span.set_attribute("faults_detected", len(detected_faults))
-            
-            logger.info(f"Detected {len(detected_faults)} faults in namespace {namespace}")
-            
-            return detected_faults
-    
-    def _analyze_pod_for_faults(self, pod: Dict) -> Optional[FaultDetectionResult]:
-        """
-        Analyze a single pod for faults
-        
-        Args:
-            pod: Pod information dictionary
-            
-        Returns:
-            FaultDetectionResult if fault detected, None otherwise
-        """
-        timestamp = datetime.utcnow().isoformat()
-        
-        # Check if pod is not running
-        if pod["phase"] != "Running":
-            fault_type = FaultType.UNKNOWN
-            description = f"Pod {pod['name']} is in {pod['phase']} state"
-            
-            # Determine specific fault type
-            if pod["phase"] == "Pending":
-                fault_type = FaultType.POD_PENDING
-            elif pod["phase"] == "Failed":
-                fault_type = FaultType.POD_CRASH
-            
-            # Check container statuses for more details
-            for cs in pod.get("container_statuses", []):
-                state = cs.get("state", {})
-                if state.get("status") == "waiting":
-                    reason = state.get("reason", "")
-                    if "ImagePull" in reason or "ErrImage" in reason:
-                        fault_type = FaultType.IMAGE_PULL_ERROR
-                        description = f"Image pull error: {state.get('message', '')}"
-                    elif "CrashLoopBackOff" in reason:
-                        fault_type = FaultType.POD_CRASH
-                        description = f"Container crash loop: {state.get('message', '')}"
-            
-            return FaultDetectionResult(
-                timestamp=timestamp,
-                fault_detected=True,
-                fault_type=fault_type.value,
-                affected_resource=f"pod/{pod['name']}",
-                namespace=pod["namespace"],
-                severity="high",
-                description=description,
-                raw_data=pod
-            )
-        
-        # Check for high restart count
-        for cs in pod.get("container_statuses", []):
-            if cs.get("restart_count", 0) > 5:
-                return FaultDetectionResult(
-                    timestamp=timestamp,
-                    fault_detected=True,
-                    fault_type=FaultType.POD_CRASH.value,
-                    affected_resource=f"pod/{pod['name']}",
-                    namespace=pod["namespace"],
-                    severity="medium",
-                    description=f"High restart count: {cs['restart_count']}",
-                    raw_data=pod
-                )
-        
-        return None
-    
-    def analyze_fault_with_llm(self, fault: FaultDetectionResult) -> Dict[str, Any]:
-        """
-        Use LLM to analyze the fault and suggest remediation
-        
-        Args:
-            fault: Detected fault
-            
-        Returns:
-            Analysis and remediation suggestion
-        """
-        with self.tracer.start_as_current_span("analyze_fault_with_llm") as span:
-            span.set_attribute("fault_type", fault.fault_type)
-            span.set_attribute("resource", fault.affected_resource)
-            
-            # Construct prompt for LLM
-            prompt = self._construct_analysis_prompt(fault)
-            
-            try:
-                # Use OpenAI v2+ client pattern
-                response = self.openai_client.chat.completions.create(
-                    model=self.config.openai_model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are an expert Kubernetes operations engineer. Analyze the fault and provide remediation steps in JSON format."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    temperature=0.3,
-                    max_tokens=500
-                )
-                
-                analysis_text = response.choices[0].message.content
-                
-                # Try to parse as JSON
-                try:
-                    analysis = json.loads(analysis_text)
-                except json.JSONDecodeError:
-                    # If not valid JSON, create structured response
-                    analysis = {
-                        "root_cause": "Analysis pending",
-                        "recommended_action": RemediationAction.NO_ACTION.value,
-                        "explanation": analysis_text
-                    }
-                
-                span.set_attribute("recommended_action", analysis.get("recommended_action", "unknown"))
-                
-                return analysis
-                
-            except Exception as e:
-                logger.error(f"Error analyzing fault with LLM: {e}")
-                span.set_attribute("error", str(e))
-                return {
-                    "root_cause": "LLM analysis failed",
-                    "recommended_action": RemediationAction.NO_ACTION.value,
-                    "explanation": str(e)
-                }
-    
-    def _construct_analysis_prompt(self, fault: FaultDetectionResult) -> str:
-        """Construct prompt for LLM analysis"""
-        return f"""
-        Analyze the following Kubernetes fault and provide remediation steps.
-        
-        Fault Type: {fault.fault_type}
-        Affected Resource: {fault.affected_resource}
-        Namespace: {fault.namespace}
-        Severity: {fault.severity}
-        Description: {fault.description}
-        
-        Raw Data:
-        {json.dumps(fault.raw_data, indent=2)}
-        
-        Provide your analysis in the following JSON format:
-        {{
-            "root_cause": "Brief explanation of the root cause",
-            "recommended_action": "One of: restart_pod, scale_deployment, update_config, increase_resources, rollback_deployment, no_action",
-            "explanation": "Detailed explanation and steps to remediate",
-            "risk_level": "low/medium/high"
-        }}
-        """
-    
-    def remediate_fault(
-        self,
-        fault: FaultDetectionResult,
-        action: RemediationAction,
-        dry_run: bool = False
-    ) -> RemediationResult:
-        """
-        Perform remediation action for a fault
-        
-        Args:
-            fault: Detected fault
-            action: Remediation action to perform
-            dry_run: If True, only simulate the action
-            
-        Returns:
-            RemediationResult
-        """
-        timestamp = datetime.utcnow().isoformat()
-        
-        with self.tracer.start_as_current_span("remediate_fault") as span:
-            span.set_attribute("fault_type", fault.fault_type)
-            span.set_attribute("action", action.value)
-            span.set_attribute("dry_run", dry_run)
-            
-            try:
-                if action == RemediationAction.RESTART_POD:
-                    result = self._restart_pod(fault, dry_run)
-                elif action == RemediationAction.SCALE_DEPLOYMENT:
-                    result = self._scale_deployment(fault, dry_run)
-                elif action == RemediationAction.CLEAR_EVICTED_PODS:
-                    result = self._clear_evicted_pods(fault, dry_run)
-                else:
-                    result = RemediationResult(
-                        timestamp=timestamp,
-                        action_taken=action.value,
-                        success=False,
-                        affected_resource=fault.affected_resource,
-                        namespace=fault.namespace,
-                        details="Action not implemented",
-                        error_message="This remediation action is not yet implemented"
-                    )
-                
-                span.set_attribute("success", result.success)
-                
-                return result
-                
-            except Exception as e:
-                logger.error(f"Error during remediation: {e}")
-                span.set_attribute("error", str(e))
-                
-                return RemediationResult(
-                    timestamp=timestamp,
-                    action_taken=action.value,
-                    success=False,
-                    affected_resource=fault.affected_resource,
-                    namespace=fault.namespace,
-                    details="Remediation failed",
-                    error_message=str(e)
-                )
-    
-    def _restart_pod(self, fault: FaultDetectionResult, dry_run: bool) -> RemediationResult:
-        """Restart a pod by deleting it"""
-        timestamp = datetime.utcnow().isoformat()
-        pod_name = fault.affected_resource.split("/")[-1]
-        
-        if dry_run:
-            return RemediationResult(
-                timestamp=timestamp,
-                action_taken=RemediationAction.RESTART_POD.value,
-                success=True,
-                affected_resource=fault.affected_resource,
-                namespace=fault.namespace,
-                details=f"[DRY RUN] Would delete pod {pod_name}"
-            )
+        # Prepare metadata for LiteLLM
+        # LiteLLM will enrich this with provider-specific details
+        request_metadata = {
+            "agent_id": self.config.agent_id,
+            "session_id": self.config.session_id,
+            "fault_resource": f"{fault_context.resource_type}/{fault_context.resource_name}",
+            "fault_namespace": fault_context.namespace,
+            "fault_status": fault_context.status,
+            "timestamp": fault_context.timestamp,
+            "agent_version": "2.1.0"
+        }
         
         try:
+            # Call LLM gateway
+            response = self.llm_gateway.chat.completions.create(
+                model=self.config.model_alias,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """You are an autonomous Kubernetes SRE agent. Analyze faults and provide remediation decisions.
+
+IMPORTANT: Always respond in valid JSON format with these exact keys:
+{
+  "root_cause": "Brief explanation of what caused the issue",
+  "action": "One of: restart_pod, delete_pod, scale_deployment, no_action, investigate",
+  "steps": ["Step 1", "Step 2", ...],
+  "risk_level": "low/medium/high"
+}"""
+                    },
+                    {
+                        "role": "user",
+                        "content": fault_context.to_prompt()
+                    }
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+                # Send metadata to LiteLLM for tracing
+                extra_body={
+                    "metadata": request_metadata
+                }
+            )
+            
+            # Parse LLM response
+            llm_response = response.choices[0].message.content
+            logger.info(f"LLM response received (via gateway)")
+            
+            # Try to parse as JSON
+            try:
+                decision_data = json.loads(llm_response)
+            except json.JSONDecodeError:
+                logger.warning("LLM response not valid JSON, using fallback")
+                decision_data = {
+                    "root_cause": "Unable to parse LLM response",
+                    "action": "investigate",
+                    "steps": ["Review LLM response manually"],
+                    "risk_level": "medium"
+                }
+            
+            # Create agent decision
+            return AgentDecision(
+                timestamp=datetime.utcnow().isoformat(),
+                fault_context=fault_context,
+                llm_reasoning=llm_response,
+                root_cause=decision_data.get("root_cause", "Unknown"),
+                recommended_action=decision_data.get("action", "investigate"),
+                remediation_steps=decision_data.get("steps", []),
+                risk_level=decision_data.get("risk_level", "medium"),
+                confidence=0.8
+            )
+            
+        except Exception as e:
+            logger.error(f"Error consulting LLM gateway: {e}")
+            
+            # Fallback decision
+            return AgentDecision(
+                timestamp=datetime.utcnow().isoformat(),
+                fault_context=fault_context,
+                llm_reasoning=f"Gateway error: {str(e)}",
+                root_cause="LLM gateway consultation failed",
+                recommended_action="investigate",
+                remediation_steps=["Manual investigation required", "Check LLM gateway logs"],
+                risk_level="high",
+                confidence=0.0
+            )
+    
+    def execute_remediation(self, decision: AgentDecision) -> Dict[str, any]:
+        """Execute the remediation action decided by LLM"""
+        action = decision.recommended_action
+        fault_ctx = decision.fault_context
+        
+        logger.info(f"Executing remediation: {action} for {fault_ctx.resource_name}")
+        
+        if self.config.dry_run:
+            logger.info(f"[DRY RUN] Would execute: {action}")
+            return {
+                "success": True,
+                "dry_run": True,
+                "action": action,
+                "message": f"Would execute {action} on {fault_ctx.resource_name}"
+            }
+        
+        # Execute actual remediation based on LLM decision
+        if action == "restart_pod" or action == "delete_pod":
+            return self._restart_pod(fault_ctx)
+        elif action == "scale_deployment":
+            return self._scale_deployment(fault_ctx)
+        elif action == "investigate":
+            return {
+                "success": True,
+                "action": "investigate",
+                "message": "Manual investigation recommended"
+            }
+        elif action == "no_action":
+            return {
+                "success": True,
+                "action": "no_action",
+                "message": "No action needed"
+            }
+        else:
+            return {
+                "success": False,
+                "action": action,
+                "message": f"Unknown action: {action}"
+            }
+    
+    def _restart_pod(self, fault_context: FaultContext) -> Dict:
+        """Restart pod by deleting it"""
+        try:
             self.v1.delete_namespaced_pod(
-                name=pod_name,
-                namespace=fault.namespace,
+                name=fault_context.resource_name,
+                namespace=fault_context.namespace,
                 body=client.V1DeleteOptions()
             )
             
-            return RemediationResult(
-                timestamp=timestamp,
-                action_taken=RemediationAction.RESTART_POD.value,
-                success=True,
-                affected_resource=fault.affected_resource,
-                namespace=fault.namespace,
-                details=f"Successfully deleted pod {pod_name}. It will be recreated by its controller."
-            )
+            return {
+                "success": True,
+                "action": "restart_pod",
+                "message": f"Successfully deleted pod {fault_context.resource_name}"
+            }
         except ApiException as e:
-            return RemediationResult(
-                timestamp=timestamp,
-                action_taken=RemediationAction.RESTART_POD.value,
-                success=False,
-                affected_resource=fault.affected_resource,
-                namespace=fault.namespace,
-                details=f"Failed to delete pod {pod_name}",
-                error_message=str(e)
-            )
+            return {
+                "success": False,
+                "action": "restart_pod",
+                "error": str(e)
+            }
     
-    def _scale_deployment(self, fault: FaultDetectionResult, dry_run: bool) -> RemediationResult:
-        """Scale a deployment"""
-        timestamp = datetime.utcnow().isoformat()
-        
-        # This is a placeholder - in real implementation, you'd need to identify the deployment
-        return RemediationResult(
-            timestamp=timestamp,
-            action_taken=RemediationAction.SCALE_DEPLOYMENT.value,
-            success=False,
-            affected_resource=fault.affected_resource,
-            namespace=fault.namespace,
-            details="Scale deployment action requires deployment name",
-            error_message="Not implemented for pod-level faults"
-        )
+    def _scale_deployment(self, fault_context: FaultContext) -> Dict:
+        """Scale deployment (placeholder)"""
+        return {
+            "success": False,
+            "action": "scale_deployment",
+            "message": "Not implemented - requires deployment identification"
+        }
     
-    def _clear_evicted_pods(self, fault: FaultDetectionResult, dry_run: bool) -> RemediationResult:
-        """Clear evicted pods from namespace"""
-        timestamp = datetime.utcnow().isoformat()
-        
-        try:
-            pods = self.v1.list_namespaced_pod(fault.namespace)
-            evicted_pods = [
-                pod for pod in pods.items
-                if pod.status.phase == "Failed" and pod.status.reason == "Evicted"
-            ]
-            
-            if dry_run:
-                return RemediationResult(
-                    timestamp=timestamp,
-                    action_taken=RemediationAction.CLEAR_EVICTED_PODS.value,
-                    success=True,
-                    affected_resource=fault.affected_resource,
-                    namespace=fault.namespace,
-                    details=f"[DRY RUN] Would delete {len(evicted_pods)} evicted pods"
-                )
-            
-            deleted_count = 0
-            for pod in evicted_pods:
-                try:
-                    self.v1.delete_namespaced_pod(
-                        name=pod.metadata.name,
-                        namespace=fault.namespace,
-                        body=client.V1DeleteOptions()
-                    )
-                    deleted_count += 1
-                except ApiException:
-                    pass
-            
-            return RemediationResult(
-                timestamp=timestamp,
-                action_taken=RemediationAction.CLEAR_EVICTED_PODS.value,
-                success=True,
-                affected_resource=fault.affected_resource,
-                namespace=fault.namespace,
-                details=f"Deleted {deleted_count} evicted pods"
-            )
-        except Exception as e:
-            return RemediationResult(
-                timestamp=timestamp,
-                action_taken=RemediationAction.CLEAR_EVICTED_PODS.value,
-                success=False,
-                affected_resource=fault.affected_resource,
-                namespace=fault.namespace,
-                details="Failed to clear evicted pods",
-                error_message=str(e)
-            )
-    
-    def run_agent_cycle(self, namespace: str = None) -> Dict[str, Any]:
+    def run_autonomous_cycle(self, namespace: str = None) -> Dict:
         """
-        Run a complete agent cycle: detect, analyze, and remediate
-        
-        Args:
-            namespace: Kubernetes namespace
-            
-        Returns:
-            Summary of the cycle
+        Run complete autonomous agent cycle
         """
         namespace = namespace or self.config.namespace
         
-        with self.tracer.start_as_current_span("run_agent_cycle") as span:
-            span.set_attribute("namespace", namespace)
-            
-            cycle_summary = {
-                "timestamp": datetime.utcnow().isoformat(),
-                "namespace": namespace,
-                "faults_detected": 0,
-                "faults_analyzed": 0,
-                "remediations_attempted": 0,
-                "remediations_successful": 0,
-                "details": []
+        logger.info(f"Starting autonomous agent cycle for namespace: {namespace}")
+        
+        cycle_summary = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "agent_id": self.config.agent_id,
+            "session_id": self.config.session_id,
+            "namespace": namespace,
+            "faults_detected": 0,
+            "decisions_made": 0,
+            "actions_executed": 0,
+            "actions_successful": 0,
+            "details": []
+        }
+        
+        # Step 1: Gather fault contexts
+        fault_contexts = self.gather_fault_context(namespace)
+        cycle_summary["faults_detected"] = len(fault_contexts)
+        
+        # Step 2: Process each fault autonomously
+        for fault_ctx in fault_contexts:
+            fault_detail = {
+                "fault": fault_ctx.to_dict(),
+                "decision": None,
+                "execution": None
             }
             
-            # Detect faults
-            faults = self.detect_faults(namespace)
-            cycle_summary["faults_detected"] = len(faults)
+            # Ask LLM for decision (via gateway)
+            decision = self.ask_llm_for_decision(fault_ctx)
+            fault_detail["decision"] = decision.to_dict()
+            cycle_summary["decisions_made"] += 1
             
-            # Process each fault
-            for fault in faults:
-                fault_detail = {
-                    "fault": fault.to_dict(),
-                    "analysis": None,
-                    "remediation": None
+            # Execute if auto-remediation enabled
+            if self.config.auto_remediate and decision.risk_level in ["low", "medium"]:
+                execution_result = self.execute_remediation(decision)
+                fault_detail["execution"] = execution_result
+                cycle_summary["actions_executed"] += 1
+                
+                if execution_result.get("success", False):
+                    cycle_summary["actions_successful"] += 1
+            else:
+                logger.info(f"Skipping execution (auto_remediate={self.config.auto_remediate}, risk={decision.risk_level})")
+                fault_detail["execution"] = {
+                    "skipped": True,
+                    "reason": "auto_remediate disabled or risk too high"
                 }
-                
-                # Analyze with LLM
-                analysis = self.analyze_fault_with_llm(fault)
-                fault_detail["analysis"] = analysis
-                cycle_summary["faults_analyzed"] += 1
-                
-                # Remediate if auto-remediation is enabled
-                if self.config.auto_remediate:
-                    recommended_action = analysis.get("recommended_action", "no_action")
-                    
-                    if recommended_action != "no_action":
-                        try:
-                            action = RemediationAction(recommended_action)
-                            remediation = self.remediate_fault(fault, action, dry_run=False)
-                            fault_detail["remediation"] = remediation.to_dict()
-                            cycle_summary["remediations_attempted"] += 1
-                            
-                            if remediation.success:
-                                cycle_summary["remediations_successful"] += 1
-                        except ValueError:
-                            logger.warning(f"Unknown remediation action: {recommended_action}")
-                
-                cycle_summary["details"].append(fault_detail)
             
-            span.set_attribute("faults_detected", cycle_summary["faults_detected"])
-            span.set_attribute("remediations_successful", cycle_summary["remediations_successful"])
-            
-            return cycle_summary
+            cycle_summary["details"].append(fault_detail)
+        
+        logger.info(f"Cycle completed: {cycle_summary['faults_detected']} faults, {cycle_summary['actions_executed']} actions")
+        
+        return cycle_summary
 
 
 def main():
-    """Main entry point for the agent"""
-    logger.info("Starting K8s Fault Detection Agent")
+    """Main entry point"""
+    logger.info("=" * 60)
+    logger.info("Autonomous K8s Fault Detection Agent")
+    logger.info("Properly Abstracted Gateway")
+    logger.info("=" * 60)
     
     try:
         # Load configuration
-        config = K8sAgentConfig()
+        config = AutonomousAgentConfig()
         
         # Create agent
-        agent = K8sFaultDetectionAgent(config)
+        agent = AutonomousK8sFaultAgent(config)
         
-        # Run one cycle (for testing)
-        logger.info("Running agent cycle...")
-        result = agent.run_agent_cycle()
+        # Run autonomous cycle
+        logger.info("Running autonomous agent cycle...")
+        result = agent.run_autonomous_cycle()
         
         # Print results
-        logger.info("Agent cycle completed:")
+        logger.info("=" * 60)
+        logger.info("Cycle Summary:")
         logger.info(json.dumps(result, indent=2))
+        logger.info("=" * 60)
         
     except Exception as e:
-        logger.error(f"Error running agent: {e}", exc_info=True)
+        logger.error(f"Error running autonomous agent: {e}", exc_info=True)
         raise
 
 
