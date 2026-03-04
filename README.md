@@ -1,1 +1,1 @@
-# sample-agents
+# agentcert-stack
