@@ -1,0 +1,230 @@
+---
+# Namespace for Litellm components
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: litellm
+  labels:
+    name: litellm
+    purpose: LLM_gateway
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: litellm-secrets
+  namespace: litellm
+type: Opaque
+stringData:
+  LITELLM_MASTER_KEY: "sk-1234"
+  OPENROUTER_API_KEY: "sk-openrouter-api-key-value"
+  GEMINI_API_KEY: "gemini_api_key_value"
+  LANGFUSE_PUBLIC_KEY: "pk-lf-langfuse-public-key-value"
+  LANGFUSE_SECRET_KEY: "sk-lf-langfuse-secret-key-value"
+
+---
+# ConfigMap for LiteLLM configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: litellm
+data:
+  LANGFUSE_OTEL_HOST: "https://cloud.langfuse.com"
+  config.yaml: |
+    model_list:
+      - model_name: gemini-3-flash
+        litellm_params:
+          model: gemini/gemini-3-flash-preview
+          api_base: https://generativelanguage.googleapis.com/v1beta
+          api_key: os.environ/GEMINI_API_KEY
+        model_info:
+          description: "Google's Gemini series model"
+          context_window: 1000000
+          max_output_tokens: 60000
+
+      - model_name: gemini-2.5-flash
+        litellm_params:
+          model: gemini/gemini-2.5-flash
+          api_base: https://generativelanguage.googleapis.com/v1beta
+          api_key: os.environ/GEMINI_API_KEY
+        model_info:
+          description: "Google's Gemini series model"
+          context_window: 1000000
+          max_output_tokens: 60000
+      
+      - model_name: gemini-2.5-flash-lite
+        litellm_params:
+          model: gemini/gemini-2.5-flash-lite
+          api_base: https://generativelanguage.googleapis.com/v1beta
+          api_key: os.environ/GEMINI_API_KEY
+        model_info:
+          description: "Google's Gemini series model"
+          context_window: 1000000
+          max_output_tokens: 60000
+      
+      - model_name: auto-free
+        litellm_params:
+          model: openrouter/openrouter/free
+          api_base: https://openrouter.ai/api/v1
+          api_key: os.environ/OPENROUTER_API_KEY
+    
+    general_settings:
+      master_key: os.environ/LITELLM_MASTER_KEY
+      allow_requests_on_db_unavailable: True
+    
+    litellm_settings:
+      callbacks: ["langfuse_otel"]
+      success_callback: ["langfuse_otel"]
+      failure_callback: ["langfuse_otel"]
+      request_timeout: 600
+      set_verbose: true
+      drop_params: true
+      num_retries: 3
+      retry_after: 2
+      default_model: "gemini-3-flash"
+
+    callback_settings:
+      langfuse_otel:
+        service_name: "litellm-gateway"
+        service_version: "2.1.0"
+        log_raw_request_response: true
+        log_function_call: true
+        trace_schema_version: "1.0"
+        enrich_metadata: true
+        add_provider_info: true
+        add_model_info: true
+        add_token_counts: true
+        add_latency_metrics: true
+
+    router_settings:
+      enable_pre_call_checks: true
+      allowed_fails: 3
+      window_size: 10
+      cooldown_time: 60
+      routing_strategy: "simple-shuffle"
+      timeout: 5
+
+---
+# LiteLLM Proxy Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm-proxy
+  namespace: litellm
+  labels:
+    app: litellm-proxy
+    component: llm-gateway
+spec:
+  selector:
+    matchLabels:
+      app: litellm-proxy
+  template:
+    metadata:
+      labels:
+        app: litellm-proxy
+        component: llm-gateway
+    spec:
+      containers:
+      - name: litellm
+        image: ghcr.io/berriai/litellm:main-latest
+        ports:
+        - name: http
+          containerPort: 4000
+          protocol: TCP
+        
+        env:
+        - name: OPENROUTER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: OPENROUTER_API_KEY
+
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: GEMINI_API_KEY
+        
+        - name: LANGFUSE_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: LANGFUSE_PUBLIC_KEY
+        
+        - name: LANGFUSE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: LANGFUSE_SECRET_KEY
+        
+        - name: LITELLM_MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: litellm-secrets
+              key: LITELLM_MASTER_KEY
+        
+        - name: LANGFUSE_OTEL_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: litellm-config
+              key: LANGFUSE_OTEL_HOST
+        
+        - name: OTEL_SERVICE_NAME
+          value: "litellm-proxy"
+        
+        - name: LITELLM_LOG
+          value: "INFO"
+        
+        volumeMounts:
+        - name: config
+          mountPath: /app/config.yaml
+          subPath: config.yaml
+        
+        command:
+        - "litellm"
+        - "--config"
+        - "/app/config.yaml"
+        - "--port"
+        - "4000"
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      
+      volumes:
+      - name: config
+        configMap:
+          name: litellm-config
+
+---
+# LiteLLM Proxy Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm-proxy
+  namespace: litellm
+  labels:
+    app: litellm-proxy
+    component: llm-gateway
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+    protocol: TCP
+    name: http
+  selector:
+    app: litellm-proxy
+
+---
+# ServiceAccount for Litellm
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: litellm
+  namespace: litellm
