@@ -53,10 +53,10 @@ general_settings:
 
 # LiteLLM core settings
 litellm_settings:
-  # Enable Langfuse OTEL tracing
-  callbacks: ["langfuse_otel"]
-  success_callback: ["langfuse_otel"]
-  failure_callback: ["langfuse_otel"]
+  # Enable Langfuse tracing (clean generation-only spans)
+  callbacks: ["langfuse"]
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
   
   # Request timeout (10 minutes)
   request_timeout: 600
@@ -78,31 +78,17 @@ litellm_settings:
 
 # Callback-specific settings
 callback_settings:
-  langfuse_otel:
+  langfuse:
     # Langfuse keys are read from environment variables:
     # - LANGFUSE_PUBLIC_KEY
     # - LANGFUSE_SECRET_KEY  
-    # - LANGFUSE_OTEL_HOST (defaults to https://cloud.langfuse.com)
+    # - LANGFUSE_HOST (defaults to https://cloud.langfuse.com)
     
-    # OTEL service information
-    service_name: "litellm-gateway"
-    service_version: "2.1.0"
-
     # Log complete request/response
     log_raw_request_response: true
     
     # Include function call data
     log_function_call: true
-
-    # Trace structure configuration
-    trace_schema_version: "1.0"
-    
-    # Metadata enrichment
-    enrich_metadata: true
-    add_provider_info: true
-    add_model_info: true
-    add_token_counts: true
-    add_latency_metrics: true
 
 # Router settings (optional)
 router_settings:

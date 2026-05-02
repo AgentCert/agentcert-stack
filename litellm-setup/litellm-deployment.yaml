@@ -30,7 +30,8 @@ metadata:
   name: litellm-config
   namespace: litellm
 data:
-  LANGFUSE_OTEL_HOST: "https://cloud.langfuse.com"
+  # Local Langfuse on host Docker - accessible via kind network gateway
+  LANGFUSE_HOST: "http://172.26.0.1:4000"
   config.yaml: |
     model_list:
       - model_name: gemini-3-flash
@@ -74,9 +75,9 @@ data:
       allow_requests_on_db_unavailable: True
     
     litellm_settings:
-      callbacks: ["langfuse_otel"]
-      success_callback: ["langfuse_otel"]
-      failure_callback: ["langfuse_otel"]
+      callbacks: ["langfuse"]
+      success_callback: ["langfuse"]
+      failure_callback: ["langfuse"]
       request_timeout: 600
       set_verbose: true
       drop_params: true
@@ -85,14 +86,9 @@ data:
       default_model: "gemini-3-flash"
 
     callback_settings:
-      langfuse_otel:
-        service_name: "litellm-gateway"
-        service_version: "2.1.0"
+      langfuse:
         log_raw_request_response: true
         log_function_call: true
-        trace_schema_version: "1.0"
-        enrich_metadata: true
-        add_provider_info: true
         add_model_info: true
         add_token_counts: true
         add_latency_metrics: true
@@ -164,11 +160,11 @@ spec:
               name: litellm-secrets
               key: LITELLM_MASTER_KEY
         
-        - name: LANGFUSE_OTEL_HOST
+        - name: LANGFUSE_HOST
           valueFrom:
             configMapKeyRef:
               name: litellm-config
-              key: LANGFUSE_OTEL_HOST
+              key: LANGFUSE_HOST
         
         - name: OTEL_SERVICE_NAME
           value: "litellm-proxy"
