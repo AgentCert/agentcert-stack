@@ -3,12 +3,16 @@ version: '3.8'
 services:
   # LiteLLM Proxy - Gateway for autonomous agents
   litellm-proxy:
-    image: ghcr.io/berriai/litellm:main-latest
+    image: litellm/litellm:v1.82.0-stable
     container_name: litellm-proxy
     restart: unless-stopped
     
+    # Enable host.docker.internal on Linux
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
     ports:
-      - "4000:4000"  # Proxy API endpoint
+      - "14000:4000"  # Proxy API endpoint (14000 avoids conflict with Langfuse on 4000)
     
     volumes:
       - ./litellm_config.yaml:/app/config.yaml:ro
@@ -21,16 +25,16 @@ services:
       # Gemini API Key
       - GEMINI_API_KEY=${GEMINI_API_KEY}
 
+      # Azure OpenAI
+      - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - AZURE_API_KEY=${AZURE_OPENAI_KEY}
       
       # Langfuse Tracing Keys
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
       - LANGFUSE_HOST=${LANGFUSE_HOST:-http://host.docker.internal:4000}
-      
-      # OTEL Configuration
-      - OTEL_SERVICE_NAME=litellm-proxy
-      - OTEL_TRACER_NAME=agentcert
-      
+
       # Logging
       - LITELLM_LOG=DEBUG
     

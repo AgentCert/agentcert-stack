@@ -165,10 +165,7 @@ spec:
             configMapKeyRef:
               name: litellm-config
               key: LANGFUSE_HOST
-        
-        - name: OTEL_SERVICE_NAME
-          value: "litellm-proxy"
-        
+
         - name: LITELLM_LOG
           value: "INFO"
         

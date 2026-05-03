@@ -36,6 +36,18 @@ model_list:
       context_window: 1000000
       max_output_tokens: 60000
 
+  # Azure OpenAI GPT-4o
+  - model_name: gpt-4o
+    litellm_params:
+      model: azure/gpt4o
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: "2024-12-01-preview"
+    model_info:
+      description: "Azure OpenAI GPT-4o"
+      context_window: 128000
+      max_output_tokens: 16384
+
   # OpenRouter Free Tier
   - model_name: auto-free
     litellm_params:
@@ -107,5 +119,5 @@ router_settings:
   # Routing strategy
   routing_strategy: "simple-shuffle"
   
-  # Timeout for health checks
-  timeout: 5
+  # Timeout for health checks and requests (seconds)
+  timeout: 120

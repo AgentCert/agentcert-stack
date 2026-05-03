@@ -71,12 +71,7 @@ fi
 
 # LiteLLM does not publish a separate slim image variant; use stable for all profiles.
 # Profile controls which env vars are required, not the image itself.
-SOURCE_IMAGE="docker.io/litellm/litellm:${LITELLM_VERSION}-stable"
-
-# Deployment mode:
-# - local (default): prefer local minikube image cache
-# - remote: always deploy directly from public image
-DEPLOY_MODE="${LITELLM_DEPLOY_MODE:-local}"
+IMAGE="docker.io/litellm/litellm:${LITELLM_VERSION}-stable"
 
 case "${PROFILE}" in
   azure|openai|all) ;;
@@ -86,15 +81,7 @@ case "${PROFILE}" in
     ;;
 esac
 
-case "${DEPLOY_MODE}" in
-  remote|local) ;;
-  *)
-    echo "[ERROR] Unknown LITELLM_DEPLOY_MODE: ${DEPLOY_MODE}. Use remote or local." >&2
-    exit 1
-    ;;
-esac
-
-echo "[INFO] Profile: ${PROFILE} => image: ${SOURCE_IMAGE}"
+echo "[INFO] Profile: ${PROFILE} => image: ${IMAGE}"
 
 if [ ! -f "${ENV_FILE}" ]; then
   echo "[ERROR] .env not found at ${ENV_FILE}" >&2
@@ -126,9 +113,7 @@ require_cmd() {
   fi
 }
 
-require_cmd docker
 require_cmd kubectl
-require_cmd minikube
 
 AZURE_API_KEY=$(read_env_value "AZURE_OPENAI_KEY")
 if [ -z "${AZURE_API_KEY}" ]; then
@@ -173,40 +158,6 @@ fi
 
 if [ -z "${LANGFUSE_PUBLIC_KEY}" ] || [ -z "${LANGFUSE_SECRET_KEY}" ] || [ -z "${LANGFUSE_HOST}" ]; then
   echo "[WARN] Langfuse keys/host missing in .env; traces may not be exported"
-fi
-
-if [ "${DEPLOY_MODE}" = "local" ]; then
-  LOCAL_IMAGE="agentcert/agentcert-litellm-proxy:dev"
-  IMAGE="${LOCAL_IMAGE}"
-
-  if minikube image ls | grep -q "${LOCAL_IMAGE}"; then
-    echo "[INFO] Found local image in minikube: ${LOCAL_IMAGE}"
-  else
-    echo "[WARN] Local minikube image not found: ${LOCAL_IMAGE}"
-
-    # Try to prepare and load a local image quickly; if anything fails, fall back to remote.
-    if ! docker image inspect "${LOCAL_IMAGE}" >/dev/null 2>&1; then
-      echo "[INFO] Local Docker image missing, pulling source image: ${SOURCE_IMAGE}"
-      if docker pull "${SOURCE_IMAGE}"; then
-        docker tag "${SOURCE_IMAGE}" "${LOCAL_IMAGE}"
-      else
-        echo "[WARN] Could not pull ${SOURCE_IMAGE}; falling back to remote image deployment"
-        IMAGE="${SOURCE_IMAGE}"
-      fi
-    fi
-
-    if [ "${IMAGE}" = "${LOCAL_IMAGE}" ]; then
-      if minikube image load "${LOCAL_IMAGE}"; then
-        echo "[OK] Loaded local image into minikube: ${LOCAL_IMAGE}"
-      else
-        echo "[WARN] Failed to load local image into minikube; falling back to remote image deployment"
-        IMAGE="${SOURCE_IMAGE}"
-      fi
-    fi
-  fi
-else
-  IMAGE="${SOURCE_IMAGE}"
-  echo "[INFO] DEPLOY_MODE=remote: using ${IMAGE} directly (skip local image load)"
 fi
 
 echo "[INFO] Applying namespace and configmap"
@@ -275,4 +226,4 @@ else
 fi
 
 echo "[OK] .env updated: LITELLM_PROXY_IMAGE=${IMAGE} LITELLM_PROFILE=${PROFILE}"
-echo "[DONE] LiteLLM build+deploy completed (profile: ${PROFILE}, mode: ${DEPLOY_MODE})"
+echo "[DONE] LiteLLM deploy completed (profile: ${PROFILE})"
