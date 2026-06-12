@@ -37,12 +37,14 @@ model_list:
       max_output_tokens: 60000
 
   # Azure OpenAI GPT-4o
-  - model_name: gpt-4o
+  # model_name = the alias agents request (AZURE_OPENAI_DEPLOYMENT in .env)
+  # LITELLM_AZURE_CHAT_MODEL = azure/<your-deployment-name> (set by setup.sh)
+  - model_name: os.environ/AZURE_OPENAI_DEPLOYMENT
     litellm_params:
-      model: azure/gpt4o
+      model: os.environ/LITELLM_AZURE_CHAT_MODEL
       api_base: os.environ/AZURE_OPENAI_ENDPOINT
       api_key: os.environ/AZURE_OPENAI_KEY
-      api_version: "2024-12-01-preview"
+      api_version: os.environ/AZURE_OPENAI_API_VERSION
     model_info:
       description: "Azure OpenAI GPT-4o"
       context_window: 128000
