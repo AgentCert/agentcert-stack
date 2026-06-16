@@ -13,7 +13,7 @@ synchronises credentials and deployment names across the rest of the monorepo.
 ![LiteLLM](https://img.shields.io/badge/LiteLLM-v1.82.0--stable-1C3D5A?style=flat-square)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-326CE5?style=flat-square&logo=kubernetes)
 ![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&logo=docker)
-![License](https://img.shields.io/badge/License-MIT-lightgrey?style=flat-square)
+![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
 
 </div>
 
@@ -229,4 +229,4 @@ consumes when generating a certification report.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE).
