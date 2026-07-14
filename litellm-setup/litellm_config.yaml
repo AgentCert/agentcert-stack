@@ -157,5 +157,13 @@ router_settings:
   # Routing strategy
   routing_strategy: "simple-shuffle"
   
-  # Timeout for health checks and requests (seconds)
-  timeout: 120
+  # Timeout for health checks and requests (seconds). This is a SEPARATE knob from
+  # litellm_settings.request_timeout above -- LiteLLM's Router (used whenever a proxy
+  # config declares model_list, which this one does) enforces its OWN per-call timeout
+  # here, and it takes precedence over request_timeout for actual completions. Left at
+  # the old default of 120 here would silently kill any CPU-served local model call that
+  # takes longer than 2 minutes, even after raising the client's own timeout and
+  # request_timeout -- reproduced directly: "litellm.Timeout: Connection timed out.
+  # Timeout passed=120.0, time taken=120.001 seconds" on a real qwen2.5-7b-instruct call
+  # via Ollama. Raised to match request_timeout above.
+  timeout: 600
