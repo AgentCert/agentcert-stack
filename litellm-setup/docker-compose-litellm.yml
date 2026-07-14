@@ -29,7 +29,20 @@ services:
       - AZURE_OPENAI_KEY=${AZURE_OPENAI_KEY}
       - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
       - AZURE_API_KEY=${AZURE_OPENAI_KEY}
-      
+      # These two were missing despite litellm_config.yaml's Azure entry
+      # referencing them for its model_name/model fields (os.environ/...).
+      # Without them, both resolve to None inside the container, which trips
+      # a real litellm bug in proxy_server.py's load_config:
+      # `if "ollama" in litellm_model_name and ...` has no null-guard, so a
+      # None model name crashes proxy startup entirely -- for every model in
+      # model_list, not just the misconfigured Azure entry.
+      - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}
+      - LITELLM_AZURE_CHAT_MODEL=${LITELLM_AZURE_CHAT_MODEL}
+      # Also missing (doesn't trip the crash above since api_version isn't the
+      # field that bug inspects, but without it real Azure calls would fail
+      # with an API-version error instead of actually working).
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION}
+
       # Langfuse Tracing Keys
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}

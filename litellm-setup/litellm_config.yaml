@@ -2,6 +2,20 @@
 # Purpose: Gateway for autonomous agents to access LLMs with Langfuse tracing
 
 # Model definitions
+#
+# The Azure entry's model_name/model fields are templated via os.environ/...
+# (AZURE_OPENAI_DEPLOYMENT / LITELLM_AZURE_CHAT_MODEL). Those two vars were
+# missing from docker-compose-litellm.yml's environment list (only
+# AZURE_OPENAI_KEY/AZURE_OPENAI_ENDPOINT were forwarded), so they resolved to
+# None *inside the container* regardless of what the host's .env contained.
+# That tripped a real litellm bug: proxy_server.py's load_config does
+# `if "ollama" in litellm_model_name and ...` with no null-guard, so a single
+# entry with a None model name crashes proxy startup entirely -- for every
+# model in model_list, not just the misconfigured one. Fixed by adding both
+# vars to the compose file's environment list; this config can now carry the
+# full multi-provider list (Gemini/Azure/OpenRouter) plus a local Ollama
+# entry side by side without crashing, once real credentials are filled in
+# for whichever providers you actually use.
 model_list:
   # Gemini 3 Flash
   - model_name: gemini-3-flash
@@ -13,7 +27,7 @@ model_list:
       description: "Google's Gemini series model"
       context_window: 1000000
       max_output_tokens: 60000
-  
+
   # Gemini 2.5 Flash
   - model_name: gemini-2.5-flash
     litellm_params:
@@ -57,6 +71,17 @@ model_list:
       api_base: https://openrouter.ai/api/v1
       api_key: os.environ/OPENROUTER_API_KEY
 
+  # Local open-weight model via Ollama — no external API key needed. Ollama
+  # runs on the HOST (not in this compose network), so from inside the
+  # litellm container it must be reached via the docker bridge IP, not
+  # localhost/127.0.0.1 (which inside the container refers to the container
+  # itself). ollama_chat/ is litellm's native Ollama chat-completions
+  # provider (distinct from the older, non-chat ollama/ prefix).
+  - model_name: qwen2.5-7b-instruct
+    litellm_params:
+      model: ollama_chat/qwen2.5:7b-instruct
+      api_base: http://172.17.0.1:11434
+
 # General proxy settings
 general_settings:
   # Master key for accessing the proxy
@@ -88,7 +113,7 @@ litellm_settings:
   retry_after: 2
 
   # Default model if none specified
-  default_model: "gemini-3-flash"
+  default_model: "qwen2.5-7b-instruct"
 
 # Callback-specific settings
 callback_settings:
