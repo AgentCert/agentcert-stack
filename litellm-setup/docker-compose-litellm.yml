@@ -54,7 +54,11 @@ services:
     command: --config /app/config.yaml --port 4000 --detailed_debug
     
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      # `curl` isn't installed in litellm/litellm:v1.82.0-stable -- the CMD itself
+      # was failing to exec (not a real health failure), so Docker had been
+      # reporting this container "unhealthy" for 20+ hours straight despite it
+      # serving correct completions the entire time. python3 is present; use it.
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/readiness', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
