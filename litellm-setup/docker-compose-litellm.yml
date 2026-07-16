@@ -17,6 +17,14 @@ services:
     volumes:
       - ./litellm_config.yaml:/app/config.yaml:ro
       - litellm-data:/app/data
+      # Patches litellm's Ollama chat transformation to recover from
+      # malformed tool-call arguments JSON (trailing garbage after a valid
+      # value) instead of crashing the request -- small open-weight models
+      # occasionally emit this, and since the bad tool_call gets persisted
+      # in conversation history, an unhandled crash here permanently wedges
+      # any client that resends history on retry (e.g. Codex CLI's
+      # `resume --last`). See patches/ollama_chat_transformation.py.
+      - ./patches/ollama_chat_transformation.py:/usr/lib/python3.13/site-packages/litellm/llms/ollama/chat/transformation.py:ro
     
     environment:
       # OpenRouter API Key
