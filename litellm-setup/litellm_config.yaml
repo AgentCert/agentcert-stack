@@ -80,7 +80,7 @@ model_list:
   - model_name: qwen2.5-7b-instruct
     litellm_params:
       model: ollama_chat/qwen2.5:7b-instruct
-      api_base: http://172.17.0.1:11434
+      api_base: http://172.26.0.1:11434
       # Ollama's OWN default context window is 2048 tokens regardless of the
       # model's 32768 max, unless overridden per-request. flash-agent's
       # system prompt alone is ~2100 tokens (measured via _build_system_prompt),
@@ -142,8 +142,13 @@ callback_settings:
 
 # Router settings (optional)
 router_settings:
-  # Enable routing and fallbacks
-  enable_pre_call_checks: true
+  # Disabled: was triggering a background health-check scheduler in LiteLLM
+  # v1.82 that pinged every configured model every ~5 min and logged each
+  # probe to Langfuse (tag: litellm-internal-health-check), generating
+  # thousands of spurious traces with no user benchmarking running.
+  # Reactive failure handling (allowed_fails + cooldown_time below) is
+  # sufficient for routing correctness without the background polling.
+  enable_pre_call_checks: false
   
   # Timeout for model availability checks
   allowed_fails: 3
