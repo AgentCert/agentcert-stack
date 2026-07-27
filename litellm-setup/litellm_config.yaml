@@ -80,7 +80,7 @@ model_list:
   - model_name: qwen2.5-7b-instruct
     litellm_params:
       model: ollama_chat/qwen2.5:7b-instruct
-      api_base: http://172.26.0.1:11434
+      api_base: http://172.19.0.1:11434
       # Ollama's OWN default context window is 2048 tokens regardless of the
       # model's 32768 max, unless overridden per-request. flash-agent's
       # system prompt alone is ~2100 tokens (measured via _build_system_prompt),
