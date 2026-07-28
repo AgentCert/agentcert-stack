@@ -56,6 +56,11 @@ services:
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
       - LANGFUSE_HOST=${LANGFUSE_HOST:-http://host.docker.internal:4000}
 
+      # Ollama endpoint — inject the host gateway so this config is portable
+      # across machines (host.docker.internal resolves to the Docker bridge
+      # gateway via the extra_hosts: host.docker.internal:host-gateway entry).
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
       # Logging
       - LITELLM_LOG=DEBUG
     
