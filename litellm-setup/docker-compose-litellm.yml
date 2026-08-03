@@ -59,7 +59,10 @@ services:
       # Ollama endpoint — inject the host gateway so this config is portable
       # across machines (host.docker.internal resolves to the Docker bridge
       # gateway via the extra_hosts: host.docker.internal:host-gateway entry).
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      # Default port is 11435 (not 11434) because :11434 is reserved for the
+      # shared system Ollama on this host; each ACE instance runs its own
+      # Ollama container on OLLAMA_PORT (setup.sh auto-derives a UID-based value).
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
 
       # Logging
       - LITELLM_LOG=DEBUG
