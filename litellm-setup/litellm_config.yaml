@@ -93,6 +93,22 @@ model_list:
       description: "Local open-weight model via Ollama (CPU)"
       context_window: 32768
 
+  # Qwen2.5-3B-Instruct — for hosts with a small (~4GB) GPU where the 32B/7B
+  # tags don't fit in VRAM. Same truncation risk as above applies, but num_ctx
+  # is kept at 8192 rather than 32768: at this model's GQA shape, KV cache is
+  # roughly 36KB/token, so 32768 tokens would add ~1.2GB on top of the ~2GB
+  # Q4_K_M weights -- too tight against a 4GB card alongside CUDA/OS overhead.
+  # 8192 (~288MB of KV cache) still comfortably covers the system prompt +
+  # tool schemas + several ReAct turns described above.
+  - model_name: qwen2.5-3b-instruct
+    litellm_params:
+      model: ollama_chat/qwen2.5:3b-instruct
+      api_base: os.environ/OLLAMA_BASE_URL
+      num_ctx: 8192
+    model_info:
+      description: "Local open-weight model via Ollama (small-VRAM GPU, e.g. 4GB laptop cards)"
+      context_window: 8192
+
 # General proxy settings
 general_settings:
   # Master key for accessing the proxy
