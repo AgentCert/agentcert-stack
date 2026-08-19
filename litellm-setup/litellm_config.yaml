@@ -100,9 +100,9 @@ model_list:
   # Q4_K_M weights -- too tight against a 4GB card alongside CUDA/OS overhead.
   # 8192 (~288MB of KV cache) still comfortably covers the system prompt +
   # tool schemas + several ReAct turns described above.
-  - model_name: qwen2.5-3b-instruct
+  - model_name: qwen2.5-32b-instruct
     litellm_params:
-      model: ollama_chat/qwen2.5:3b-instruct
+      model: ollama_chat/qwen2.5:32b-instruct
       api_base: os.environ/OLLAMA_BASE_URL
       num_ctx: 8192
     model_info:
