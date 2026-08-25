@@ -64,6 +64,46 @@ model_list:
       context_window: 128000
       max_output_tokens: 16384
 
+  # Azure OpenAI GPT-4o -- SECOND deployment entry, same real backend,
+  # deliberately duplicated under the same model_name for cooldown
+  # redundancy (not for load-balancing capacity).
+  #
+  # Why: litellm's Router tracks cooldowns per deployment id (a hash of
+  # model_name + litellm_params, see router.py:_generate_model_id), and
+  # should_retry_this_error() aborts the retry loop immediately -- before
+  # num_retries is exhausted -- once zero deployments in a model_name group
+  # are "healthy" (router_utils/cooldown_handlers.py). With only ONE
+  # deployment behind "gpt-4o", 3 failures inside any 10s window
+  # (allowed_fails/window_size below) cools down that single deployment and
+  # every retry attempt for the next 60s (cooldown_time) short-circuits
+  # regardless of num_retries. This bit us for real: litellm v1.82's
+  # proxy-wide shared aiohttp session (see AIOHTTP_KEEPALIVE_TIMEOUT above)
+  # occasionally hands back a stale/dead pooled connection, producing a
+  # litellm.APIConnectionError that is a client-side connection-pool
+  # artifact, not a real Azure outage -- so blackballing the only route to
+  # Azure over it is actively counterproductive.
+  #
+  # A second, independently-tracked deployment id for the exact same
+  # backend means one entry getting cooled down still leaves the other
+  # "healthy", so num_retries actually gets to run instead of being cut
+  # short. `timeout` is set explicitly here (vs. inherited from
+  # router_settings.timeout below) purely so this entry's litellm_params
+  # dict differs from the one above -- byte-identical params would hash to
+  # the SAME deployment id and silently collapse back into one entry,
+  # defeating the point. The value is otherwise a no-op (matches the
+  # router-level default).
+  - model_name: os.environ/AZURE_OPENAI_DEPLOYMENT
+    litellm_params:
+      model: os.environ/LITELLM_AZURE_CHAT_MODEL
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT
+      api_key: os.environ/AZURE_OPENAI_KEY
+      api_version: os.environ/AZURE_OPENAI_API_VERSION
+      timeout: 600
+    model_info:
+      description: "Azure OpenAI GPT-4o (redundant deployment id for cooldown isolation)"
+      context_window: 128000
+      max_output_tokens: 16384
+
   # OpenRouter Free Tier
   - model_name: auto-free
     litellm_params:
@@ -132,10 +172,20 @@ litellm_settings:
   
   # Drop parameters not supported by target model
   drop_params: true
-  
-  # Number of retries on failure
-  num_retries: 3
-  
+
+  # Number of retries on failure. This is the ONLY retry knob that covers
+  # litellm.APIConnectionError (the class of error a stale pooled aiohttp
+  # connection raises -- see AIOHTTP_KEEPALIVE_TIMEOUT below): litellm's
+  # typed router_settings.retry_policy (per-exception-type retry counts)
+  # only recognizes AuthenticationError/Timeout/RateLimitError/
+  # ContentPolicyViolationError/BadRequestError (verified against the
+  # installed v1.82.0 by reading router_utils/get_retry_from_policy.py --
+  # APIConnectionError isn't one of the isinstance() checks there, so a
+  # retry_policy entry for it would silently never fire). Raised from 3 to 5
+  # for extra margin against that specific failure mode; applies to every
+  # exception type uniformly since that's the only lever available here.
+  num_retries: 5
+
   # Timeout between retries
   retry_after: 2
 
