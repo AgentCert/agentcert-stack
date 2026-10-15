@@ -32,8 +32,12 @@ curl http://localhost:4000/health
 #### b. Kubernetes version
 
 ```bash
-# Apply configuration
-kubectl apply -f litellm-deployment.yaml
+# Apply configuration — images are resolved from IMAGE_REGISTRY in .env
+# (same rule as setup.sh apply_manifest_resolved / scripts/lib/resolve_image_env.py):
+#   IMAGE_REGISTRY set   -> <IMAGE_REGISTRY>/<IMAGE_MIRROR_NAMESPACE>/<public name>
+#   IMAGE_REGISTRY empty -> upstream public name
+python3 ../../scripts/lib/resolve_image_env.py --rewrite-manifests ../../.env \
+    < litellm-deployment.yaml | kubectl apply -f -
 
 # Check deployment
 kubectl get pods -l app=litellm-proxy

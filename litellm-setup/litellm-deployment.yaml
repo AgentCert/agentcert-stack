@@ -127,7 +127,7 @@ spec:
     spec:
       containers:
       - name: litellm
-        image: ghcr.io/berriai/litellm:main-latest
+        image: litellm/litellm:v1.82.0-stable
         ports:
         - name: http
           containerPort: 4000

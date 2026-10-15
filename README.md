@@ -129,8 +129,11 @@ Two paths:
 
 ```bash
 cd litellm-setup
-# Edit litellm-deployment.yaml's Secret block with real values, then:
-kubectl apply -f litellm-deployment.yaml
+# Edit litellm-deployment.yaml's Secret block with real values, then apply
+# with images resolved from IMAGE_REGISTRY in the monorepo .env
+# (same rule as setup.sh apply_manifest_resolved):
+python3 ../../scripts/lib/resolve_image_env.py --rewrite-manifests ../../.env \
+    < litellm-deployment.yaml | kubectl apply -f -
 ```
 
 This creates the `litellm` namespace, the `Secret`, the `ConfigMap` (model registry +
