@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${SCRIPT_DIR}/local-custom/config/.env"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../../.env"
+DEPLOY=false
+LOCAL_REQUESTED=0
 LITELLM_DIR_DEFAULT_A="${SCRIPT_DIR}/../agent-charts/litellm"
 LITELLM_DIR_DEFAULT_B="${SCRIPT_DIR}/../../agent-charts/litellm"
 LITELLM_DIR=""
@@ -10,14 +13,26 @@ NAMESPACE="litellm"
 DEPLOYMENT="litellm-proxy"
 SERVER_NAMESPACE="litmus-chaos"
 SERVER_DEPLOYMENT="litmusportal-server"
+# Single source of truth for the LiteLLM release. Must match the
+# `mirror|platform|litellm/litellm:<LITELLM_VERSION>-stable` row in
+# deploy/images.txt, which is what mirror-images.sh copies into IMAGE_REGISTRY.
+LITELLM_VERSION="v1.82.0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --deploy) DEPLOY=true; shift ;;
+    --local) LOCAL_REQUESTED=1; shift ;;
+    -h|--help)
+      echo 'Usage: build-litellm.sh [--deploy] [--env-file PATH] [--litellm-dir PATH]'
+      echo 'Default: cache the upstream LiteLLM image locally. --deploy applies Kubernetes resources.'
+      exit 0 ;;
     --env-file)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo 'ERROR: --env-file requires a path' >&2; exit 2; }
       ENV_FILE="${2:-}"
       shift 2
       ;;
     --litellm-dir)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { echo 'ERROR: --litellm-dir requires a path' >&2; exit 2; }
       LITELLM_DIR="${2:-}"
       shift 2
       ;;
@@ -27,6 +42,30 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+if [[ "${LOCAL_REQUESTED}" -eq 1 ]] && [[ "${DEPLOY}" == true ]]; then
+    echo 'ERROR: --local cannot be combined with --deploy.' >&2
+    exit 2
+fi
+
+if [ ! -f "${ENV_FILE}" ]; then
+  echo "[ERROR] .env not found at ${ENV_FILE}" >&2
+  exit 1
+fi
+
+# Resolve the LiteLLM image once, for BOTH modes. registry_load/registry_ref
+# must run before the --local early exit, otherwise --deploy would fall back to
+# a hardcoded docker.io reference and the cluster would pull from upstream even
+# when IMAGE_REGISTRY points at a private/air-gapped registry.
+# shellcheck source=../../scripts/lib/registry.sh
+source "${REPO_ROOT}/scripts/lib/registry.sh"
+registry_load "${ENV_FILE}"
+IMAGE="$(registry_ref "litellm/litellm:${LITELLM_VERSION}-stable")"
+
+if [[ "${DEPLOY}" == false ]]; then
+  docker pull "${IMAGE}"
+  echo "[OK] LiteLLM image cached locally: ${IMAGE}"
+  exit 0
+fi
 
 if [[ -z "${LITELLM_DIR}" ]]; then
   if [[ -d "${LITELLM_DIR_DEFAULT_A}" ]]; then
@@ -43,7 +82,6 @@ fi
 # slim image (~500MB) supports Azure OpenAI and OpenAI only.
 # full image (~1.5GB) supports all providers.
 # ---------------------------------------------------------------------------
-LITELLM_VERSION="v1.82.0"
 
 echo ""
 echo "Select LiteLLM provider profile:"
@@ -70,8 +108,8 @@ else
 fi
 
 # LiteLLM does not publish a separate slim image variant; use stable for all profiles.
-# Profile controls which env vars are required, not the image itself.
-IMAGE="docker.io/litellm/litellm:${LITELLM_VERSION}-stable"
+# Profile controls which env vars are required, not the image itself. IMAGE was
+# already resolved through scripts/lib/registry.sh above.
 
 case "${PROFILE}" in
   azure|openai|all) ;;
@@ -82,11 +120,6 @@ case "${PROFILE}" in
 esac
 
 echo "[INFO] Profile: ${PROFILE} => image: ${IMAGE}"
-
-if [ ! -f "${ENV_FILE}" ]; then
-  echo "[ERROR] .env not found at ${ENV_FILE}" >&2
-  exit 1
-fi
 
 if [ ! -d "${LITELLM_DIR}" ]; then
   echo "[ERROR] LiteLLM manifest dir not found at ${LITELLM_DIR}" >&2
