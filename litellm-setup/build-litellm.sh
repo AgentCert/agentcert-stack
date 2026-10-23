@@ -47,6 +47,11 @@ if [[ "${LOCAL_REQUESTED}" -eq 1 ]] && [[ "${DEPLOY}" == true ]]; then
     exit 2
 fi
 
+# Image names resolve through the monorepo's shared registry library, so this
+# script only works inside an ace-monorepo checkout (not a lone agentcert-stack).
+REGISTRY_LIB="${REPO_ROOT}/scripts/lib/registry.sh"
+[[ -f "${REGISTRY_LIB}" ]] || { echo "ERROR: ${REGISTRY_LIB} not found; run this script from an ace-monorepo checkout." >&2; exit 1; }
+
 if [ ! -f "${ENV_FILE}" ]; then
   echo "[ERROR] .env not found at ${ENV_FILE}" >&2
   exit 1
@@ -56,12 +61,19 @@ fi
 # must run before the --local early exit, otherwise --deploy would fall back to
 # a hardcoded docker.io reference and the cluster would pull from upstream even
 # when IMAGE_REGISTRY points at a private/air-gapped registry.
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../../scripts/lib/registry.sh
-source "${REPO_ROOT}/scripts/lib/registry.sh"
+source "${REGISTRY_LIB}"
 registry_load "${ENV_FILE}"
 IMAGE="$(registry_ref "litellm/litellm:${LITELLM_VERSION}-stable")"
 
 if [[ "${DEPLOY}" == false ]]; then
+  # With IMAGE_REGISTRY set the image is pulled from that registry, so log in
+  # first (no-op without credentials; a failure only warns, as an earlier
+  # docker login may still work).
+  if [[ -n "${IMAGE_REGISTRY}" ]]; then
+    registry_login >/dev/null || echo "[WARN] login to $(registry_host) failed; the pull may get 401" >&2
+  fi
   docker pull "${IMAGE}"
   echo "[OK] LiteLLM image cached locally: ${IMAGE}"
   exit 0
@@ -240,10 +252,14 @@ else
   echo "[WARN] ${SERVER_NAMESPACE}/${SERVER_DEPLOYMENT} not found; skipping server env sync"
 fi
 
+# .env holds the PUBLIC name: every reader (docker-compose.yml, registry.sh)
+# resolves it against IMAGE_REGISTRY itself, so writing the resolved ${IMAGE}
+# here would be resolved twice and pin today's registry into the file.
+PUBLIC_IMAGE="litellm/litellm:${LITELLM_VERSION}-stable"
 if grep -q "^LITELLM_PROXY_IMAGE=" "${ENV_FILE}"; then
-  sed -i "s|^LITELLM_PROXY_IMAGE=.*|LITELLM_PROXY_IMAGE=${IMAGE}|" "${ENV_FILE}"
+  sed -i "s|^LITELLM_PROXY_IMAGE=.*|LITELLM_PROXY_IMAGE=${PUBLIC_IMAGE}|" "${ENV_FILE}"
 else
-  printf "\nLITELLM_PROXY_IMAGE=%s\n" "${IMAGE}" >> "${ENV_FILE}"
+  printf "\nLITELLM_PROXY_IMAGE=%s\n" "${PUBLIC_IMAGE}" >> "${ENV_FILE}"
 fi
 
 if grep -q "^LITELLM_PROFILE=" "${ENV_FILE}"; then
@@ -258,5 +274,5 @@ else
   printf "LITELLM_MASTER_KEY=%s\n" "${LITELLM_MASTER_KEY}" >> "${ENV_FILE}"
 fi
 
-echo "[OK] .env updated: LITELLM_PROXY_IMAGE=${IMAGE} LITELLM_PROFILE=${PROFILE}"
+echo "[OK] .env updated: LITELLM_PROXY_IMAGE=${PUBLIC_IMAGE} LITELLM_PROFILE=${PROFILE}"
 echo "[DONE] LiteLLM deploy completed (profile: ${PROFILE})"

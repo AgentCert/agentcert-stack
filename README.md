@@ -64,7 +64,7 @@ agentcert-stack/
 │   ├── litellm-deployment.yaml       # Production K8s: Namespace + Secret + ConfigMap +
 │   │                                 #                 Deployment + Service + ServiceAccount
 │   ├── .env                          # Credential template (overwritten by build-litellm.sh)
-│   ├── build-litellm.sh              # One-shot bring-up: validate + apply + sync
+│   ├── build-litellm.sh              # Caches the LiteLLM image; --deploy: validate + apply + sync
 │   └── QUICK_START.md                # Step-by-step setup guide
 ├── LICENSE
 └── README.md
@@ -145,10 +145,11 @@ and the `ServiceAccount`.
 
 ```bash
 cd litellm-setup
-./build-litellm.sh
+./build-litellm.sh --deploy
 ```
 
-The script reads `.env`, prompts for a deployment **profile** (`azure` / `openai` /
+Without `--deploy` the script only pulls and caches the LiteLLM image locally and
+changes nothing in the cluster. With `--deploy` it reads `.env`, prompts for a deployment **profile** (`azure` / `openai` /
 `all`), validates that the keys for that profile are present, applies the manifests,
 and — if a `litmusportal-server` deployment exists in the cluster — syncs
 `http://litellm-proxy.litellm.svc.cluster.local:4000/v1` into its env so AgentCert
@@ -182,7 +183,8 @@ Required for at least one provider:
 ## `build-litellm.sh` in detail
 
 A 230-line bash driver in [`litellm-setup/build-litellm.sh`](litellm-setup/build-litellm.sh).
-At a glance:
+At a glance (with `--deploy`; without it the script only resolves the image from
+`.env` and caches it locally):
 
 1. Sources `.env` (and verifies the keys for the chosen profile).
 2. Prompts the operator for the profile — `azure`, `openai`, or `all`.
