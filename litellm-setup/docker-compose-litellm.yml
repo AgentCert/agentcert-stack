@@ -64,10 +64,11 @@ services:
       # Ollama container on OLLAMA_PORT (setup.sh auto-derives a UID-based value).
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11435}
 
-      # Logging
-      - LITELLM_LOG=DEBUG
+      # Logging. Not DEBUG, and no --detailed_debug: at debug level LiteLLM
+      # logs every model's plaintext API key on every request.
+      - LITELLM_LOG=INFO
     
-    command: --config /app/config.yaml --port 4000 --detailed_debug
+    command: --config /app/config.yaml --port 4000
     
     healthcheck:
       # `curl` isn't installed in litellm/litellm:v1.82.0-stable -- the CMD itself
